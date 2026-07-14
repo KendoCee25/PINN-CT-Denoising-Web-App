@@ -1,0 +1,24 @@
+# --- Core ML / training pipeline ---
+# NOTE: install torch/torchvision separately (platform-specific). On this
+# CPU-only machine use the CPU wheels:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# On Colab/Kaggle the GPU build is preinstalled — do not pin CUDA here.
+numpy
+scipy
+scikit-image          # PSNR / SSIM + phantom utilities (radon, shepp-logan)
+matplotlib            # training curves, qualitative figures
+tqdm
+
+# --- Backend (FastAPI inference service) ---
+fastapi
+uvicorn[standard]
+pydantic>=2
+pillow                # PNG encode/decode for base64 image transport
+
+# --- Testing ---
+pytest
+httpx                 # FastAPI TestClient dependency
+
+# --- Experiment logging (pick one; TensorBoard has no account/setup) ---
+tensorboard
+# wandb               # uncomment if using Weights & Biases instead
