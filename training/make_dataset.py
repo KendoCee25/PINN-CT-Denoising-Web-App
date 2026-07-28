@@ -46,7 +46,9 @@ def generate(
     """Yield (clean, noisy, dose_code, pid) numpy rows for every phantom x dose."""
     dev = torch.device(device)
     angles = default_angles(n_angles, device=dev)
-    gen = torch.Generator(device="cpu").manual_seed(seed)
+    # The generator must live on the same device as the tensors torch.poisson
+    # samples from, so derive it from `dev` rather than hardcoding CPU.
+    gen = torch.Generator(device=dev).manual_seed(seed)
 
     for start in range(0, n_phantoms, batch_size):
         ids = list(range(start, min(start + batch_size, n_phantoms)))
