@@ -65,8 +65,17 @@ def add_poisson_noise(
         (noisy_image, clean_sinogram, noisy_sinogram)
         noisy_image: (B, 1, H, W) clean image plus the reconstructed noise field,
         clipped to [0, 1] — matched in scale to the clean target.
-        clean_sinogram / noisy_sinogram: (B, 1, n_angles, W) line integrals —
-        the noisy one is what the PINN's consistency loss compares against.
+        clean_sinogram / noisy_sinogram: (B, 1, n_angles, W) line integrals in
+        **raw units**, i.e. directly comparable to `radon(image)`.
+
+    The raw-units guarantee matters for Week 3. Internally the photon model works
+    on a sinogram rescaled to a fixed peak attenuation (P_MAX) using a per-image
+    factor derived from the *clean* phantom — a factor the network cannot know at
+    training time. Both sinograms are converted back out of those units before
+    being returned, so the PINN's consistency loss can compare
+    `radon(model_output)` against `noisy_sinogram` with no rescaling. Returning
+    them in P_MAX units would leave a per-image ~30x mismatch that the physics
+    weight lambda would silently absorb, making a lambda ablation meaningless.
     """
     if dose not in DOSE_I0:
         raise ValueError(f"dose must be one of {list(DOSE_I0)}, got {dose!r}")
@@ -88,15 +97,20 @@ def add_poisson_noise(
     # 4) Back to a noisy line-integral sinogram.
     sino_noisy = -torch.log(noisy_counts / i0)
 
-    # 5) Reconstruct ONLY the noise field and add it to the clean image. FBP has
-    #    an arbitrary absolute scale, so reconstructing (noisy - clean) cancels
-    #    the structure/DC offset and leaves realistic, spatially-correlated CT
-    #    noise. Rescale back out of the P_MAX attenuation units into image units.
-    noise_sino = sino_noisy - sino
-    noise_field = fbp(noise_sino, angles) * (peak / P_MAX)
+    # 5) Undo the P_MAX rescaling so both sinograms are in raw line-integral
+    #    units. `sino_raw` is then exactly radon(image), which is the reference
+    #    the PINN's consistency loss forward-projects against.
+    scale = peak / P_MAX
+    sino_raw = sino * scale
+    sino_noisy_raw = sino_noisy * scale
+
+    # 6) Reconstruct ONLY the noise field and add it to the clean image.
+    #    Reconstructing (noisy - clean) cancels the structure and the DC term
+    #    the ramp filter drops, leaving realistic spatially-correlated CT noise.
+    noise_field = fbp(sino_noisy_raw - sino_raw, angles)
     noisy_image = (image + noise_field).clamp(0.0, 1.0)
 
-    return noisy_image, sino, sino_noisy
+    return noisy_image, sino_raw, sino_noisy_raw
 
 
 if __name__ == "__main__":

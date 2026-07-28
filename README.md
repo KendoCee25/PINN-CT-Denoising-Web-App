@@ -37,7 +37,9 @@ trained checkpoints are downloaded to `models/` and run locally for inference
 PINN/
 ├── api/            FastAPI inference backend
 │   └── schemas.py  Frozen request/response models
-├── training/       Offline pipeline: phantoms, Radon, noise, U-Net, PINN, train loop
+├── training/       Offline pipeline: phantoms, Radon, noise, U-Net, train loop
+│   ├── pinn.py     Differentiable sinogram-consistency loss (the PINN)
+│   └── ablate.py   λ sweep with a λ=0 control arm
 ├── frontend/       React SPA (scaffolded in Week 7)
 ├── models/         Trained checkpoints (.pt) — git-ignored
 ├── data/           Generated phantoms & sinograms — git-ignored
@@ -63,9 +65,36 @@ uvicorn api.main:app --reload
 
 ## Project plan
 
-8-week plan in `docs/` (proposal §6). Current status: **Week 2 — synthetic data
-pipeline & baseline U-Net training.**
+8-week plan in `docs/` (proposal §6). Current status: **Week 3 — PINN
+sinogram-consistency loss & λ ablation.**
 
 Evaluation note: a denoiser is judged against the *untouched noisy input*, not on
 its absolute PSNR. `notebooks/train_baseline.ipynb` §4b prints that comparison per
 dose level; the pass condition is a positive delta at every dose.
+
+## Training the models
+
+Both models share `training/train.py` and an identical U-Net backbone — only the
+loss differs, which is what isolates the effect of the physics term.
+
+```bash
+# Dataset (stores measured sinograms, which the PINN loss needs)
+python -m training.make_dataset --n-phantoms 500 --size 128 --device cuda
+
+# Baseline: MSE only
+python -m training.train --data-dir data/dataset --epochs 40 --out models/baseline.pt
+
+# PINN: MSE + λ·sinogram-consistency
+python -m training.train --data-dir data/dataset --epochs 40 --lam 0.1 \
+    --loss-angles 60 --out models/pinn.pt
+
+# λ ablation (proposal §6, Week 3) — includes a λ=0 control arm
+python -m training.ablate --data-dir data/dataset --epochs 15 --device cuda
+```
+
+The physics term is **normalised** by the target sinogram's mean square, making it
+dimensionless. Without that, an MSE over raw line integrals (peaking near 45) sits
+four to five orders of magnitude above an MSE over [0,1] pixels, and every λ in the
+proposal's range would be physics-dominated. Normalising makes λ a genuine relative
+weight. `--loss-angles 60` subsamples the projection for speed, the proposal's
+stated mitigation for a slow forward transform.
