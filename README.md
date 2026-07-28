@@ -63,5 +63,9 @@ uvicorn api.main:app --reload
 
 ## Project plan
 
-8-week plan in `docs/` (proposal §6). Current status: **Week 1 — scaffolding &
-frozen API contract.**
+8-week plan in `docs/` (proposal §6). Current status: **Week 2 — synthetic data
+pipeline & baseline U-Net training.**
+
+Evaluation note: a denoiser is judged against the *untouched noisy input*, not on
+its absolute PSNR. `notebooks/train_baseline.ipynb` §4b prints that comparison per
+dose level; the pass condition is a positive delta at every dose.

@@ -24,12 +24,21 @@ import torch
 from training.radon import default_angles, fbp, radon
 
 # Blank-scan photon counts per ray. Higher = more dose = less noise.
-# Ratios follow the AAPM/Mayo low-dose challenge idea of dose fractions of a
-# routine scan (high == routine, low ~= quarter dose).
+# `high` stands for a routine-dose scan; `medium` and `low` are reduced tube
+# outputs (~27% and ~10% of routine), following the AAPM/Mayo low-dose challenge
+# idea of expressing dose as a fraction of a routine acquisition.
+#
+# These counts are CALIBRATED, not arbitrary: at 128x128 with 180 angles they
+# put the noisy input at roughly 38 / 32 / 28 dB PSNR for high / medium / low,
+# which is the regime real low-dose CT denoising operates in. An earlier set of
+# values left the "low" dose input at 46 dB — cleaner than a routine clinical
+# scan — which made the denoising task vacuous (a plain U-Net could not beat
+# passing the input straight through). If you change the image size, the angle
+# count, or P_MAX, re-check these against the target PSNRs above.
 DOSE_I0 = {
-    "high": 1.0e5,
-    "medium": 3.0e4,
-    "low": 1.0e4,
+    "high": 6.0e3,
+    "medium": 1.6e3,
+    "low": 6.0e2,
 }
 
 # Peak line-integral attenuation the sinogram is scaled to before the photon

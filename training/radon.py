@@ -92,7 +92,13 @@ def fbp(sinogram: torch.Tensor, angles: torch.Tensor) -> torch.Tensor:
         grid = _rotation_grid(-float(angle), w, device, dtype).expand(b, -1, -1, -1)
         recon = recon + F.grid_sample(smear, grid, align_corners=False, mode="bilinear")
 
-    recon = recon * (math.pi / (2 * n_angles))
+    # FBP normalisation for angles spanning a HALF turn [0, pi): the discrete
+    # back-projection sum approximates (pi / n_angles) * integral over theta.
+    # (A pi/(2*n_angles) factor would only be correct for a full [0, 2pi) sweep,
+    # where every ray is measured twice.) Getting this right matters because
+    # noise.py reconstructs the noise field through fbp and relies on its
+    # amplitude being in true image units.
+    recon = recon * (math.pi / n_angles)
     return recon
 
 
