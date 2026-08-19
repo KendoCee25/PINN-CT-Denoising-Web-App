@@ -1,6 +1,6 @@
-"""FastAPI inference backend — Week 6.
+#FastAPI inference backend — Week 6.
 
-Serves the frozen contract in docs/api_contract.md / api/schemas.py. Both model
+"""Serves the frozen contract in docs/api_contract.md / api/schemas.py. Both model
 checkpoints and the held-out phantom set are loaded once at startup; /denoise
 runs a single forward pass through each model and computes metrics server-side
 so the frontend never needs ML dependencies (proposal §3.2).
@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
 import torch
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
 from api.schemas import (
@@ -28,6 +30,10 @@ from api.schemas import (
     Metrics,
     PhantomInfo,
     PhantomListResponse,
+    RealCaseInfo,
+    RealCaseListResponse,
+    RealDenoiseRequest,
+    RealDenoiseResponse,
     Winner,
 )
 from training.metrics import psnr, ssim
@@ -35,11 +41,20 @@ from training.unet import UNet
 
 MODELS_DIR = Path("models")
 DATA_PATH = Path("data/dataset/test.npz")
+REAL_DATA_PATH = Path("data/real_ldct/real_ldct.npz")
+REAL_MANIFEST_PATH = Path("data/real_ldct/manifest.json")
 DOSE_CODE = {"low": 0, "medium": 1, "high": 2}
+# Degenerate (near pure-air) slices where full-dose and low-dose are pixel-
+# identical after windowing — same threshold as training/eval_real_ldct.py, so
+# the live app and the offline generalisation numbers in the dissertation
+# refer to exactly the same cases.
+REAL_DEGENERATE_STD = 1e-4
 
 # Populated once at startup by load_state(); never touched per-request.
 state: dict = {"unet": None, "pinn": None, "device": "cpu", "clean": None,
-               "noisy": None, "dose": None, "pid": None, "phantom_row": {}}
+               "noisy": None, "dose": None, "pid": None, "phantom_row": {},
+               "real_clean": None, "real_noisy": None, "real_case_row": {},
+               "real_patient_id": None, "real_slice_idx": None, "real_patients": []}
 
 
 def _load_model(path: Path, device: str) -> UNet | None:
@@ -84,6 +99,31 @@ def load_state() -> None:
         state["clean"] = None
         state["phantom_row"] = {}
 
+    if REAL_DATA_PATH.exists():
+        real = np.load(REAL_DATA_PATH)
+        real_clean, real_noisy = real["clean"], real["noisy"]
+        real_patient_id, real_slice_idx = real["patient_id"], real["slice_idx"]
+
+        # Same filter as training/eval_real_ldct.py, so the cases offered here
+        # match the pairs behind the numbers reported in the dissertation.
+        keep = real_clean.std(axis=(1, 2)) > REAL_DEGENERATE_STD
+        real_clean, real_noisy = real_clean[keep], real_noisy[keep]
+        real_patient_id, real_slice_idx = real_patient_id[keep], real_slice_idx[keep]
+
+        patients = []
+        if REAL_MANIFEST_PATH.exists():
+            patients = json.loads(REAL_MANIFEST_PATH.read_text()).get("patients", [])
+
+        state["real_clean"] = real_clean
+        state["real_noisy"] = real_noisy
+        state["real_patient_id"] = real_patient_id
+        state["real_slice_idx"] = real_slice_idx
+        state["real_patients"] = patients
+        state["real_case_row"] = {f"real_{row:03d}": row for row in range(len(real_clean))}
+    else:
+        state["real_clean"] = None
+        state["real_case_row"] = {}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -92,6 +132,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PINN vs U-Net CT Denoising", version="1.0", lifespan=lifespan)
+
+# The React dev server (Week 7) runs on a different origin/port than the API,
+# so the browser needs this to allow the fetch calls.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -163,6 +212,64 @@ def denoise(req: DenoiseRequest) -> DenoiseResponse:
     return DenoiseResponse(
         phantom_id=req.phantom_id,
         dose_level=req.dose_level,
+        images=Images(
+            clean=_encode_png(clean),
+            noisy=_encode_png(noisy),
+            unet=_encode_png(unet_out),
+            pinn=_encode_png(pinn_out),
+        ),
+        metrics=metrics,
+        winner=winner,
+    )
+
+
+@app.get("/real_cases", response_model=RealCaseListResponse)
+def real_cases() -> RealCaseListResponse:
+    patients = state["real_patients"]
+    items = []
+    for case_id, row in sorted(state["real_case_row"].items(), key=lambda kv: kv[1]):
+        pid = int(state["real_patient_id"][row])
+        sidx = int(state["real_slice_idx"][row])
+        name = patients[pid] if pid < len(patients) else f"patient{pid}"
+        items.append(RealCaseInfo(
+            id=case_id,
+            label=f"{name} · slice {sidx}",
+            thumbnail=_encode_png(state["real_clean"][row]),
+        ))
+    return RealCaseListResponse(cases=items)
+
+
+@app.post("/real_denoise", response_model=RealDenoiseResponse)
+def real_denoise(req: RealDenoiseRequest) -> RealDenoiseResponse:
+    if state["unet"] is None or state["pinn"] is None:
+        raise HTTPException(status_code=503, detail="model checkpoints not loaded")
+    if state["real_clean"] is None:
+        raise HTTPException(status_code=503, detail="real LDCT dataset not loaded")
+
+    row = state["real_case_row"].get(req.case_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"case_id {req.case_id!r} not found")
+
+    device = state["device"]
+    clean = state["real_clean"][row]
+    noisy = state["real_noisy"][row]
+
+    x = torch.from_numpy(noisy)[None, None].to(device)
+    with torch.no_grad():
+        unet_out = state["unet"](x).clamp(0.0, 1.0).cpu().numpy()[0, 0]
+        pinn_out = state["pinn"](x).clamp(0.0, 1.0).cpu().numpy()[0, 0]
+
+    metrics = Metrics(
+        noisy=Metric(psnr=psnr(noisy, clean), ssim=ssim(noisy, clean)),
+        unet=Metric(psnr=psnr(unet_out, clean), ssim=ssim(unet_out, clean)),
+        pinn=Metric(psnr=psnr(pinn_out, clean), ssim=ssim(pinn_out, clean)),
+    )
+    winner = Winner(
+        psnr="pinn" if metrics.pinn.psnr > metrics.unet.psnr else "unet",
+        ssim="pinn" if metrics.pinn.ssim > metrics.unet.ssim else "unet",
+    )
+    return RealDenoiseResponse(
+        case_id=req.case_id,
         images=Images(
             clean=_encode_png(clean),
             noisy=_encode_png(noisy),

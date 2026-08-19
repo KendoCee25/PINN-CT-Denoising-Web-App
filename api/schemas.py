@@ -1,6 +1,6 @@
-"""Pydantic schemas — the FROZEN API contract in code.
+###Pydantic schemas — the FROZEN API contract in code.
 
-These mirror docs/api_contract.md. Treat both as a single source of truth: if one
+"""These mirror docs/api_contract.md. Treat both as a single source of truth: if one
 changes, the other must change with it. Frozen in Week 1 to allow the frontend to
 be built against a mock backend in parallel with the real backend.
 """
@@ -67,6 +67,31 @@ class Winner(BaseModel):
 class DenoiseResponse(BaseModel):
     phantom_id: str
     dose_level: DoseLevel
+    images: Images
+    metrics: Metrics
+    winner: Winner
+
+
+# --- GET /real_cases (v1.1 — real TCIA LDCT generalisation cases)
+class RealCaseInfo(BaseModel):
+    id: str
+    label: str
+    thumbnail: str = Field(
+        ..., description="Base64 PNG data URI of the real full-dose (clean) reference"
+    )
+
+
+class RealCaseListResponse(BaseModel):
+    cases: list[RealCaseInfo]
+
+
+# --- POST /real_denoise (v1.1)
+class RealDenoiseRequest(BaseModel):
+    case_id: str
+
+
+class RealDenoiseResponse(BaseModel):
+    case_id: str
     images: Images
     metrics: Metrics
     winner: Winner

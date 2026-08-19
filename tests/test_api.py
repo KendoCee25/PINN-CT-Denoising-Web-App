@@ -15,12 +15,16 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from api.main import DATA_PATH, MODELS_DIR, app
+from api.main import DATA_PATH, MODELS_DIR, REAL_DATA_PATH, app
 
 pytestmark = pytest.mark.skipif(
     not ((MODELS_DIR / "baseline.pt").exists() and (MODELS_DIR / "pinn.pt").exists()
          and DATA_PATH.exists()),
     reason="requires trained checkpoints and the generated test dataset",
+)
+
+requires_real_data = pytest.mark.skipif(
+    not REAL_DATA_PATH.exists(), reason="requires the preprocessed real TCIA dataset"
 )
 
 
@@ -101,4 +105,49 @@ def test_denoise_invalid_dose_level_is_422(client):
 
 def test_denoise_missing_field_is_422(client):
     r = client.post("/denoise", json={"dose_level": "low"})
+    assert r.status_code == 422
+
+
+@requires_real_data
+def test_real_cases_list_nonempty_with_valid_thumbnails(client):
+    r = client.get("/real_cases")
+    assert r.status_code == 200
+    items = r.json()["cases"]
+    assert len(items) > 0
+    first = items[0]
+    assert first["id"].startswith("real_")
+    assert first["thumbnail"].startswith("data:image/png;base64,")
+    png_bytes = base64.b64decode(first["thumbnail"].split(",", 1)[1])
+    img = Image.open(io.BytesIO(png_bytes))
+    assert img.format == "PNG"
+    assert img.mode == "L"
+
+
+@requires_real_data
+def test_real_denoise_returns_images_and_metrics_in_range(client):
+    case_id = client.get("/real_cases").json()["cases"][0]["id"]
+    r = client.post("/real_denoise", json={"case_id": case_id})
+    assert r.status_code == 200
+    body = r.json()
+
+    assert body["case_id"] == case_id
+    for key in ("clean", "noisy", "unet", "pinn"):
+        assert body["images"][key].startswith("data:image/png;base64,")
+    for key in ("noisy", "unet", "pinn"):
+        m = body["metrics"][key]
+        assert m["psnr"] > 0
+        assert 0.0 <= m["ssim"] <= 1.0
+    assert body["winner"]["psnr"] in ("unet", "pinn")
+    assert body["winner"]["ssim"] in ("unet", "pinn")
+
+
+@requires_real_data
+def test_real_denoise_unknown_case_is_404(client):
+    r = client.post("/real_denoise", json={"case_id": "real_999999"})
+    assert r.status_code == 404
+
+
+@requires_real_data
+def test_real_denoise_missing_field_is_422(client):
+    r = client.post("/real_denoise", json={})
     assert r.status_code == 422
