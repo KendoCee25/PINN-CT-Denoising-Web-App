@@ -1,0 +1,18 @@
+{
+  "source": "TCIA LDCT-and-Projection-data (McCollough et al.), DOI 10.7937/9npb2637",
+  "license": "CC BY 4.0",
+  "patients": [
+    "C016",
+    "C021",
+    "C030",
+    "C050",
+    "C081",
+    "C130"
+  ],
+  "n_pairs": 215,
+  "size": 128,
+  "stride": 10,
+  "window_center_hu": 40.0,
+  "window_width_hu": 300.0,
+  "note": "image-domain only; no raw projection data available in this download"
+}
