@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -134,10 +135,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="PINN vs U-Net CT Denoising", version="1.0", lifespan=lifespan)
 
 # The React dev server (Week 7) runs on a different origin/port than the API,
-# so the browser needs this to allow the fetch calls.
+# so the browser needs this to allow the fetch calls. In production the
+# deployed frontend's origin is supplied via FRONTEND_ORIGIN (Render env var).
+origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+if extra := os.getenv("FRONTEND_ORIGIN"):
+    origins.append(extra)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=origins,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
